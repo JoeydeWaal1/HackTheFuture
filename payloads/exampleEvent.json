@@ -1,0 +1,14 @@
+{
+    "version": "0",
+    "id": "4dcb3c33-e46e-3ce8-a06d-b1b6698aaa18",
+    "detail-type": "ToBeTranslatedBy-ExampleTeamName",
+    "source": "HTF22",
+    "account": "128894441789",
+    "time": "2022-11-13T22:50:11Z",
+    "region": "eu-west-1",
+    "resources": [ "TestResource" ],
+    "detail": {
+        "Message": "Let op de stropers komen jullie richting uit",
+        "Location": "Location A"
+    }
+}

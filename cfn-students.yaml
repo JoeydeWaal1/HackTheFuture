@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for the i8c Hack The Future 2023 Challenge (Team CyberSnakes)
+
+Globals:
+  Function:
+    Timeout: 10
+    Tracing: Active
+
+Parameters:
+  TeamName:
+    Default: CyberSnakes
+    Type: String
+  SQSUrl:
+    Default: https://sqs.eu-central-1.amazonaws.com/128894441789/CyberSnakes-SQS
+    Type: String
+  SendGridApiKey:
+    Default: <need to fill in>
+    Type: String
+  DynamoDBName:
+    Default: htf-2023-ciphertext-table
+    Type: String
+  ClickupApiKey:
+    Default: 7J1IKILJ7BFNI2ZV85QDOGLOANN7STRGSWMBXCEMMSSQRL8WMDEN682WMJSV6ZKM
+    Type: String
+  ClickupEndpoint:
+    Default: WCV2QG06A61WS9QGQQARD3DZDZWXJ421
+    Type: String
+  DiscordUrl:
+    Default: https://discord.com/api/webhooks/1172175797059059852/v6xxM69rgmcfUaQ4WEDOG9C-zr6x8cZvBaww-_8B_HksmUl1hMO81qZSTZuijS3nXpX8
+    Type: String
+
+Resources:
+  MyLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: HTF23-${TeamName}-Lambda
+      CodeUri: src/fn-htf-2023-studentlambda/
+      Handler: lambda.handler
+      Runtime: nodejs16.x
+      Environment:
+        Variables:
+          EventBusName:
+            Fn::ImportValue: HTF23-i8c-Stack-EventBridgeBusName
+          SQSUrl:
+            Ref: SQSUrl
+          DynamoDBName:
+            Ref: DynamoDBName
+          TeamName:
+            Ref: TeamName
+          ClickupEndpoint:
+            Ref: ClickupEndpoint
+          ClickupApiKey:
+            Ref: ClickupApiKey
+          DiscordUrl:
+            Ref: DiscordUrl
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: events:*
+              Resource: "*"
+            - Effect: Allow # One of the assignments is to perfect this
+              Action: sqs:*
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - comprehend:DetectDominantLanguage
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - translate:TranslateText
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - "xray:PutTraceSegments"
+                - "xray:PutTelemetryRecords"
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: "*"
+      Tags:
+        Owner:
+          Ref: TeamName
+        Project: HTF23
+        Service: Lambda
+
+  # Sends the Message to your Lambda
+  EventBridgeToMyLambdaRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName:
+        Fn::ImportValue: HTF23-i8c-Stack-EventBridgeBusName
+      State: ENABLED
+      EventPattern:
+        source:
+          - HTF23
+        detail-type:
+          - Fn::Sub: ToBeUsedBy-${TeamName}
+      Targets:
+        - Arn:
+            Fn::GetAtt: [MyLambda, Arn]
+          Id: MyLambda
+
+  # Allows your Lambda to be triggered on a new message
+  PermissionForEventBridgeRuleToInvokeMyLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: MyLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt: [EventBridgeToMyLambdaRule, Arn]
+
+  # SQS is created by students in the AWS portal
+
+  # EventBridge to Sendgrid
+  MyEventBridgeSendgridRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName:
+        Fn::ImportValue: HTF23-i8c-Stack-EventBridgeBusName
+      State: ENABLED
+      EventPattern:
+        source:
+          - HTF23-SendGrid
+        detail-type:
+          - Ref: TeamName
+      Targets:
+        - Id: SendGrid
+          Arn:
+            Fn::GetAtt: [SendGridApiDestination, Arn]
+          RoleArn:
+            Fn::GetAtt: [EventBridgeRole, Arn]
+          InputTransformer:
+            InputPathsMap:
+              to: $.detail.To
+              from: $.detail.From
+              body: $.detail.Message
+              teamName: $.detail.TeamName
+            InputTemplate: >
+              {
+                "personalizations": [
+                  {
+                    "to": [
+                      {
+                        "email": <to>
+                      }
+                    ]
+                  }
+                ],
+                "from": {
+                  "email": <from>
+                },
+                "subject": <teamName>,
+                "content": [
+                  {
+                    "type": "text/plain",
+                    "value": <body>
+                  }
+                ]
+              }
+
+  SendGridConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name:
+        Fn::Sub: HTF23-${TeamName}-SendGridConnection
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: Authorization
+          ApiKeyValue:
+            Fn::Sub: "Bearer ${SendGridApiKey}"
+      Description: Credentials to connect to SendGrid
+
+  SendGridApiDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      ConnectionArn:
+        Fn::GetAtt: [SendGridConnection, Arn]
+      Description: SendGrid destination
+      HttpMethod: POST
+      InvocationEndpoint: "https://api.sendgrid.com/v3/mail/send"
+      InvocationRateLimitPerSecond: 1
+      Name:
+        Fn::Sub: HTF23-${TeamName}-SendGridApiDestination
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AllowConnectionCreation
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:InvokeApiDestination
+                Resource:
+                  - Fn::GetAtt: [SendGridApiDestination, Arn]
